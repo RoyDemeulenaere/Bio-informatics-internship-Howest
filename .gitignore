@@ -1,0 +1,5 @@
+results/
+nichenet_networks/
+*.RData
+*.Rhistory
+*.rds
