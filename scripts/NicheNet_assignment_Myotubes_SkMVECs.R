@@ -1,72 +1,57 @@
 # NicheNet ligand activity analysis for the internship assignment
-# Comparison 4: matched donors, Myotubes vs SkMVECs 2D confluent
+# Comparison: matched donors, Myotubes vs SkMVECs 2D confluent
 #
 # This script reads the provided raw gene count files, performs paired
 # differential expression with edgeR, and runs NicheNet on the genes
 # upregulated in the receiver cell type.
 
-suppressPackageStartupMessages({
-  library(tidyverse)
-  library(edgeR)
-  library(nichenetr)
-  library(cowplot)
-  library(ggpubr)
-})
+# Load required packages
+#install.packages("BiocManager")
+#BiocManager::install("edgeR")
 
-### 0. Settings ---------------------------------------------------------------
+library(tidyverse)  # data manipulation and plotting
+library(edgeR)      # differential expression analysis
+library(nichenetr)  # NicheNet ligand activity analysis
+library(cowplot)    # combining plots
+library(ggpubr)     # publication-style plots
+
+### Settings/parameters -------------------------------------------------------
 
 # Main biological question:
-# Which ligands expressed by SkMVECs could explain the transcriptional program
-# observed in Myotubes?
-#
+# Which ligands expressed by SkMVECs could explain the changing gene activity observed in Myotubes?
+
 # To run the opposite direction, change these two values:
 sender_celltype <- "SkMVECs"
 receiver_celltype <- "Myotubes"
 
+# NicheNet analysis parameters
+# Organism-specific ligand-receptor and ligand-target network.
 organism <- "human"
+# NicheNet ranks ligands by predicted activity, keep top 30 ligands for downstream analysis.
 top_n_ligands <- 30
+# Counts per million: filtering threshold for gene expression.
 min_cpm <- 1
+# This threshold removes genes with very low or unreliable expression.
 min_samples_expressed <- 2
+# False discovery rate: adjusted p-value threshold
 fdr_cutoff <- 0.05
+# log2 fold change
 logfc_cutoff <- 1
 
-get_script_dir <- function() {
-  file_arg <- "--file="
-  cmd_args <- commandArgs(trailingOnly = FALSE)
-  script_path <- sub(file_arg, "", cmd_args[grepl(file_arg, cmd_args)])
+setwd("C:/Users/royde/OneDrive/Documenten/BIT11 Internship/repo_upload")
 
-  if (length(script_path) > 0) {
-    return(dirname(normalizePath(script_path)))
-  }
-
-  if (requireNamespace("rstudioapi", quietly = TRUE) && rstudioapi::isAvailable()) {
-    active_path <- rstudioapi::getActiveDocumentContext()$path
-    if (!is.null(active_path) && nzchar(active_path)) {
-      return(dirname(normalizePath(active_path)))
-    }
-  }
-
-  getwd()
-}
-
-script_dir <- get_script_dir()
-project_dir <- if (basename(script_dir) == "scripts") {
-  normalizePath(file.path(script_dir, ".."), mustWork = FALSE)
-} else {
-  script_dir
-}
+# Set project folders
+project_dir <- getwd()
 
 count_dir <- file.path(project_dir, "data", "counts")
-if (!dir.exists(count_dir)) {
-  count_dir <- project_dir
-}
-
 output_dir <- file.path(project_dir, "results", "nichenet_assignment_results")
 network_dir <- file.path(project_dir, "nichenet_networks")
 
-dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
-dir.create(network_dir, showWarnings = FALSE, recursive = TRUE)
+# Create output folders if they do not exist
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(network_dir, recursive = TRUE, showWarnings = FALSE)
 
+# Create sample metadata
 sample_info <- tribble(
   ~sample_id, ~donor, ~cell_type, ~file_name,
   "GC122806", "788", "Myotubes", "GC122806_KG.count",
@@ -79,335 +64,246 @@ sample_info <- tribble(
   "GC122788", "792", "SkMVECs", "GC122788_KG.count",
   "GC124881", "794", "SkMVECs", "GC124881_KG.count",
   "GC122790", "796", "SkMVECs", "GC122790_KG.count"
-) %>%
+)
+
+# Add full file paths and convert variables
+sample_info <- sample_info %>%
   mutate(
     file_path = file.path(count_dir, file_name),
     donor = factor(donor),
-    cell_type = relevel(factor(cell_type), ref = sender_celltype)
+    cell_type = factor(cell_type)
   )
 
-if (!all(file.exists(sample_info$file_path))) {
-  stop(
-    "Missing count file(s): ",
-    paste(sample_info$file_path[!file.exists(sample_info$file_path)], collapse = ", "),
-    call. = FALSE
-  )
+# Set SkMVECs as the reference cell type
+sample_info$cell_type <- relevel(sample_info$cell_type, ref = "SkMVECs")
+
+# Check if all count files are present
+missing_files <- sample_info$file_path[!file.exists(sample_info$file_path)]
+
+if (length(missing_files) > 0) {
+  stop("Some count files are missing: ", paste(missing_files, collapse = ", "))
 }
+
 
 ### 1. Read count files -------------------------------------------------------
 
-read_count_file <- function(path, sample_id) {
-  readr::read_tsv(
-    path,
+# Function to read one count file
+read_count_file <- function(file_path, sample_id) {
+  
+  counts_one_sample <- read_tsv(
+    file_path,
     col_names = c("gene", sample_id),
-    col_types = cols(gene = col_character(), .default = col_double())
-  ) %>%
+    show_col_types = FALSE
+  )
+# if the gene appears more than once, this adds the counts together  
+  counts_one_sample <- counts_one_sample %>%
     filter(!is.na(gene), gene != "") %>%
     group_by(gene) %>%
-    summarise("{sample_id}" := sum(.data[[sample_id]], na.rm = TRUE), .groups = "drop")
+    summarise(
+      count = sum(.data[[sample_id]], na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  colnames(counts_one_sample) <- c("gene", sample_id)
+  
+  return(counts_one_sample)
 }
 
-count_tables <- map2(sample_info$file_path, sample_info$sample_id, read_count_file)
+# Read all count files into a list
+count_tables <- list()
 
-counts_tbl <- reduce(count_tables, full_join, by = "gene") %>%
-  mutate(across(-gene, ~replace_na(.x, 0))) %>%
-  arrange(gene)
+for (i in 1:nrow(sample_info)) {
+  file_path <- sample_info$file_path[i]
+  sample_id <- sample_info$sample_id[i]
+  
+  count_tables[[i]] <- read_count_file(file_path, sample_id)
+}
 
-counts <- counts_tbl %>%
-  column_to_rownames("gene") %>%
-  select(all_of(sample_info$sample_id)) %>%
-  as.matrix()
+# Combine all count tables into one table
+counts_tbl <- count_tables[[1]]
 
+for (i in 2:length(count_tables)) {
+  counts_tbl <- full_join(counts_tbl, count_tables[[i]], by = "gene")
+}
+
+# Replace missing values with zero
+counts_tbl[is.na(counts_tbl)] <- 0
+
+# Convert the table into a count matrix
+counts_df <- as.data.frame(counts_tbl)
+
+rownames(counts_df) <- counts_df$gene
+counts_df$gene <- NULL
+
+counts_df <- counts_df[, sample_info$sample_id]
+
+counts <- as.matrix(counts_df)
 storage.mode(counts) <- "integer"
 
+head(rownames(counts))
+
+# Save the combined count matrix and metadata
 write_csv(counts_tbl, file.path(output_dir, "combined_counts_matrix.csv"))
 write_csv(sample_info, file.path(output_dir, "sample_metadata.csv"))
 
 ### 2. Paired differential expression ----------------------------------------
 
-y <- DGEList(counts = counts, samples = sample_info)
-keep <- filterByExpr(y, group = sample_info$cell_type)
-y <- y[keep, , keep.lib.sizes = FALSE]
+# Differential expression analysis using edgeR.
+# Which genes are more highly expressed in the receiver cell type (Myotubes), 
+# compared with the sender cell type (sKMVECs), while accounting for matched donors?
+
+# Create an edgeR object from the count matrix
+y <- DGEList(
+  counts = counts,
+  samples = sample_info
+)
+
+# Remove genes with very low expression
+keep_genes <- filterByExpr(
+  y,
+  group = sample_info$cell_type
+)
+
+y <- y[keep_genes, , keep.lib.sizes = FALSE]
+
+# Normalize the count data
 y <- calcNormFactors(y)
 
-design <- model.matrix(~ donor + cell_type, data = sample_info)
-colnames(design) <- make.names(colnames(design))
+# Create the design matrix
+# This compares cell types while correcting for donor differences
+design <- model.matrix(
+  ~ donor + cell_type,
+  data = sample_info
+)
 
-receiver_coef <- make.names(paste0("cell_type", receiver_celltype))
-if (!receiver_coef %in% colnames(design)) {
-  stop(
-    "Could not find receiver coefficient in design matrix: ",
-    receiver_coef,
-    "\nDesign columns are: ",
-    paste(colnames(design), collapse = ", "),
-    call. = FALSE
-  )
+# Show the design matrix columns
+colnames(design)
+
+# In this analysis, SkMVECs is the reference group
+# So this coefficient tests Myotubes compared with SkMVECs
+receiver_coef <- "cell_typeMyotubes"
+
+# Check if the coefficient exists
+if (!(receiver_coef %in% colnames(design))) {
+  stop("The coefficient cell_typeMyotubes was not found in the design matrix.")
 }
 
+# Estimate variation between samples
 y <- estimateDisp(y, design)
-fit <- glmQLFit(y, design)
-qlf <- glmQLFTest(fit, coef = receiver_coef)
 
-de_results <- topTags(qlf, n = Inf)$table %>%
-  rownames_to_column("gene") %>%
-  as_tibble() %>%
+# Fit the statistical model: glmQLFit is the step where edgeR learns the expression pattern and variability of each gene 
+# so we can test which genes are upregulated or downregulated between cell types.
+fit <- glmQLFit(y, design)
+
+# Test for genes upregulated in Myotubes compared with SkMVECs
+qlf <- glmQLFTest(
+  fit,
+  coef = receiver_coef
+)
+
+# Get the differential expression results
+de_results <- topTags(qlf, n = Inf)$table
+
+# Add gene names as a normal column
+de_results$gene <- rownames(de_results)
+
+# Convert to tibble and sort by FDR
+de_results <- as_tibble(de_results)
+de_results <- de_results %>%
+  select(gene, everything()) %>%
   arrange(FDR)
 
-write_csv(de_results, file.path(output_dir, "DE_receiver_vs_sender_edgeR.csv"))
+# Save the differential expression results
+write_csv(
+  de_results,
+  file.path(output_dir, "DE_receiver_vs_sender_edgeR.csv")
+)
 
+# Select significantly upregulated genes in Myotubes
 geneset_oi_raw <- de_results %>%
-  filter(FDR <= fdr_cutoff, logFC >= logfc_cutoff) %>%
+  filter(FDR <= 0.05, logFC >= 1) %>%
   pull(gene)
 
+# Check if enough genes were selected for NicheNet
 if (length(geneset_oi_raw) < 20) {
-  warning(
-    "The strict gene set has fewer than 20 genes. ",
-    "For exploratory analysis, consider fdr_cutoff <- 0.10 or logfc_cutoff <- 0.5."
-  )
+  warning("Less than 20 genes were selected. Consider using FDR <= 0.10 or logFC >= 0.5.")
 }
+
 
 ### 3. Load NicheNet prior model ---------------------------------------------
 
-download_if_missing <- function(url, destfile) {
-  if (!file.exists(destfile)) {
-    message("Downloading: ", basename(destfile))
-    options(timeout = 1200)
-    download.file(url, destfile = destfile, mode = "wb")
-  }
-  destfile
+# Give R more time to download the large NicheNet files
+options(timeout = 1200)
+# NicheNet network files for human data
+lr_network_url <- "https://zenodo.org/record/7074291/files/lr_network_human_21122021.rds"
+ligand_target_url <- "https://zenodo.org/record/7074291/files/ligand_target_matrix_nsga2r_final.rds"
+weighted_networks_url <- "https://zenodo.org/record/7074291/files/weighted_networks_nsga2r_final.rds"
+
+# File names where the downloaded files will be saved
+lr_network_file <- file.path(network_dir, "lr_network_human_21122021.rds")
+ligand_target_file <- file.path(network_dir, "ligand_target_matrix_nsga2r_final.rds")
+weighted_networks_file <- file.path(network_dir, "weighted_networks_nsga2r_final.rds")
+
+# Download files only if they are not already present
+if (!file.exists(lr_network_file)) {
+  download.file(lr_network_url, lr_network_file, mode = "wb")
 }
 
-if (organism == "human") {
-  lr_network_file <- download_if_missing(
-    "https://zenodo.org/record/7074291/files/lr_network_human_21122021.rds",
-    file.path(network_dir, "lr_network_human_21122021.rds")
-  )
-  ligand_target_file <- download_if_missing(
-    "https://zenodo.org/record/7074291/files/ligand_target_matrix_nsga2r_final.rds",
-    file.path(network_dir, "ligand_target_matrix_nsga2r_final.rds")
-  )
-  weighted_networks_file <- download_if_missing(
-    "https://zenodo.org/record/7074291/files/weighted_networks_nsga2r_final.rds",
-    file.path(network_dir, "weighted_networks_nsga2r_final.rds")
-  )
-} else if (organism == "mouse") {
-  lr_network_file <- download_if_missing(
-    "https://zenodo.org/record/7074291/files/lr_network_mouse_21122021.rds",
-    file.path(network_dir, "lr_network_mouse_21122021.rds")
-  )
-  ligand_target_file <- download_if_missing(
-    "https://zenodo.org/record/7074291/files/ligand_target_matrix_nsga2r_final_mouse.rds",
-    file.path(network_dir, "ligand_target_matrix_nsga2r_final_mouse.rds")
-  )
-  weighted_networks_file <- download_if_missing(
-    "https://zenodo.org/record/7074291/files/weighted_networks_nsga2r_final_mouse.rds",
-    file.path(network_dir, "weighted_networks_nsga2r_final_mouse.rds")
-  )
-} else {
-  stop("organism must be 'human' or 'mouse'.", call. = FALSE)
+if (!file.exists(ligand_target_file)) {
+  download.file(ligand_target_url, ligand_target_file, mode = "wb")
 }
 
-lr_network <- readRDS(lr_network_file) %>% distinct(from, to)
+if (!file.exists(weighted_networks_file)) {
+  download.file(weighted_networks_url, weighted_networks_file, mode = "wb")
+}
+
+# Load the NicheNet networks into R
+lr_network <- readRDS(lr_network_file)
 ligand_target_matrix <- readRDS(ligand_target_file)
 weighted_networks <- readRDS(weighted_networks_file)
 
+# Keep only unique ligand-receptor combinations
+lr_network <- lr_network %>%
+  distinct(from, to)
+
+lr_network <- lr_network %>%
+  mutate(
+    from = toupper(from),
+    to = toupper(to)
+  )
+
+rownames(ligand_target_matrix) <- toupper(rownames(ligand_target_matrix))
+colnames(ligand_target_matrix) <- toupper(colnames(ligand_target_matrix))
+
+
+
 ### 4. Define sender ligands and receiver receptors --------------------------
 
+# Calculate CPM values for all genes and samples
 plain_cpm <- cpm(y)
 
-get_expressed_genes <- function(cell_type) {
-  sample_ids <- sample_info %>%
-    filter(.data$cell_type == .env$cell_type) %>%
-    pull(sample_id)
+# Get sender samples
+sender_samples <- sample_info %>%
+  filter(cell_type == sender_celltype) %>%
+  pull(sample_id)
 
-  rownames(plain_cpm)[
-    rowSums(plain_cpm[, sample_ids, drop = FALSE] >= min_cpm) >= min_samples_expressed
-  ]
-}
+# Get receiver samples
+receiver_samples <- sample_info %>%
+  filter(cell_type == receiver_celltype) %>%
+  pull(sample_id)
 
-expressed_genes_sender <- get_expressed_genes(sender_celltype)
-expressed_genes_receiver <- get_expressed_genes(receiver_celltype)
+# Find genes expressed in sender samples
+expressed_genes_sender <- rownames(plain_cpm)[
+  rowSums(plain_cpm[, sender_samples] >= min_cpm) >= min_samples_expressed
+]
 
-ligands <- lr_network %>% pull(from) %>% unique()
-receptors <- lr_network %>% pull(to) %>% unique()
+# Find genes expressed in receiver samples
+expressed_genes_receiver <- rownames(plain_cpm)[
+  rowSums(plain_cpm[, receiver_samples] >= min_cpm) >= min_samples_expressed
+]
 
-expressed_ligands <- intersect(ligands, expressed_genes_sender)
-expressed_receptors <- intersect(receptors, expressed_genes_receiver)
+message("Expressed sender genes: ", length(expressed_genes_sender))
+message("Expressed receiver genes: ", length(expressed_genes_receiver))
 
-potential_ligands <- lr_network %>%
-  filter(from %in% expressed_ligands, to %in% expressed_receptors) %>%
-  pull(from) %>%
-  unique() %>%
-  intersect(colnames(ligand_target_matrix))
-
-geneset_oi <- intersect(geneset_oi_raw, rownames(ligand_target_matrix))
-background_expressed_genes <- intersect(expressed_genes_receiver, rownames(ligand_target_matrix))
-
-write_csv(tibble(gene = geneset_oi), file.path(output_dir, "geneset_of_interest_receiver_upregulated.csv"))
-write_csv(tibble(gene = background_expressed_genes), file.path(output_dir, "background_receiver_expressed_genes.csv"))
-write_csv(tibble(ligand = potential_ligands), file.path(output_dir, "potential_ligands.csv"))
-
-message("Sender cell type: ", sender_celltype)
-message("Receiver cell type: ", receiver_celltype)
-message("Expressed sender ligands: ", length(expressed_ligands))
-message("Expressed receiver receptors: ", length(expressed_receptors))
-message("Potential ligands: ", length(potential_ligands))
-message("Geneset of interest: ", length(geneset_oi))
-message("Background genes: ", length(background_expressed_genes))
-
-if (length(geneset_oi) < 10) {
-  stop(
-    "Too few receiver-upregulated genes overlap the NicheNet model. ",
-    "Try relaxing fdr_cutoff/logfc_cutoff or check gene symbols.",
-    call. = FALSE
-  )
-}
-
-### 5. NicheNet ligand activity analysis -------------------------------------
-
-ligand_activities <- predict_ligand_activities(
-  geneset = geneset_oi,
-  background_expressed_genes = background_expressed_genes,
-  ligand_target_matrix = ligand_target_matrix,
-  potential_ligands = potential_ligands
-) %>%
-  arrange(desc(aupr_corrected)) %>%
-  mutate(rank = row_number())
-
-write_csv(ligand_activities, file.path(output_dir, "ligand_activities.csv"))
-
-best_upstream_ligands <- ligand_activities %>%
-  slice_head(n = top_n_ligands) %>%
-  pull(test_ligand)
-
-write_lines(best_upstream_ligands, file.path(output_dir, "best_upstream_ligands.txt"))
-
-### 6. Infer ligand-target and ligand-receptor links -------------------------
-
-active_ligand_target_links_df <- best_upstream_ligands %>%
-  lapply(
-    get_weighted_ligand_target_links,
-    geneset = geneset_oi,
-    ligand_target_matrix = ligand_target_matrix,
-    n = 200
-  ) %>%
-  bind_rows()
-
-write_csv(active_ligand_target_links_df, file.path(output_dir, "active_ligand_target_links.csv"))
-
-active_ligand_target_links <- prepare_ligand_target_visualization(
-  ligand_target_df = active_ligand_target_links_df,
-  ligand_target_matrix = ligand_target_matrix,
-  cutoff = 0.25
-)
-
-order_ligands <- intersect(best_upstream_ligands, colnames(active_ligand_target_links)) %>% rev()
-order_targets <- active_ligand_target_links_df$target %>%
-  unique() %>%
-  intersect(rownames(active_ligand_target_links))
-
-vis_ligand_target <- t(active_ligand_target_links[order_targets, order_ligands])
-
-p_ligand_target <- make_heatmap_ggplot(
-  vis_ligand_target,
-  y_name = paste("Prioritized", sender_celltype, "ligands"),
-  x_name = paste(receiver_celltype, "upregulated genes"),
-  color = "purple",
-  legend_title = "Regulatory potential"
-) +
-  scale_fill_gradient2(low = "whitesmoke", high = "purple")
-
-ligand_receptor_links_df <- get_weighted_ligand_receptor_links(
-  best_upstream_ligands,
-  expressed_receptors,
-  lr_network,
-  weighted_networks$lr_sig
-)
-
-write_csv(ligand_receptor_links_df, file.path(output_dir, "active_ligand_receptor_links.csv"))
-
-vis_ligand_receptor <- prepare_ligand_receptor_visualization(
-  ligand_receptor_links_df,
-  best_upstream_ligands,
-  order_hclust = "both"
-)
-
-p_ligand_receptor <- make_heatmap_ggplot(
-  t(vis_ligand_receptor),
-  y_name = paste("Prioritized", sender_celltype, "ligands"),
-  x_name = paste("Receptors expressed by", receiver_celltype),
-  color = "mediumvioletred",
-  legend_title = "Prior interaction potential"
-)
-
-### 7. Summary figures --------------------------------------------------------
-
-vis_ligand_aupr <- ligand_activities %>%
-  filter(test_ligand %in% best_upstream_ligands) %>%
-  column_to_rownames("test_ligand") %>%
-  select(aupr_corrected) %>%
-  arrange(aupr_corrected) %>%
-  as.matrix(ncol = 1)
-
-p_ligand_aupr <- make_heatmap_ggplot(
-  vis_ligand_aupr,
-  y_name = paste("Prioritized", sender_celltype, "ligands"),
-  x_name = "Ligand activity",
-  color = "darkorange",
-  legend_title = "AUPR"
-) +
-  theme(axis.text.x.top = element_blank())
-
-ggsave(
-  file.path(output_dir, "01_ligand_activity_aupr.png"),
-  p_ligand_aupr,
-  width = 5,
-  height = 7,
-  dpi = 300
-)
-
-ggsave(
-  file.path(output_dir, "02_ligand_target_heatmap.png"),
-  p_ligand_target,
-  width = 10,
-  height = 7,
-  dpi = 300
-)
-
-ggsave(
-  file.path(output_dir, "03_ligand_receptor_heatmap.png"),
-  p_ligand_receptor,
-  width = 10,
-  height = 7,
-  dpi = 300
-)
-
-combined_without_legends <- plot_grid(
-  p_ligand_aupr + theme(legend.position = "none"),
-  p_ligand_target + theme(
-    legend.position = "none",
-    axis.ticks = element_blank(),
-    axis.title.y = element_blank()
-  ),
-  p_ligand_receptor + theme(legend.position = "none"),
-  ncol = 1,
-  align = "v",
-  rel_heights = c(1, 2, 2)
-)
-
-final_figure <- plot_grid(
-  combined_without_legends,
-  get_legend(p_ligand_aupr),
-  ncol = 2,
-  rel_widths = c(0.9, 0.1)
-)
-
-ggsave(
-  file.path(output_dir, "04_nichenet_summary_figure.png"),
-  final_figure,
-  width = 12,
-  height = 13,
-  dpi = 300
-)
-
-message("Analysis finished. Results are in: ", normalizePath(output_dir))
+head(expressed_genes_sender)
+head(expressed_genes_receiver)
