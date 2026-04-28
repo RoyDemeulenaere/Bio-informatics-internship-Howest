@@ -1,6 +1,8 @@
 # Bioinformatics Internship: NicheNet Analysis
 
 This repository contains the assignment workflow for a NicheNet ligand activity analysis of matched donor gene count files.
+To find out how myoblasts and Skeletal Microvascular Endothelial cells (SkMVECs) interact with each other.
+
 
 ## Comparison
 
@@ -69,12 +71,7 @@ Important output files:
 - `combined_counts_matrix.csv`
 - `sample_metadata.csv`
 - `DE_receiver_vs_sender_edgeR.csv`
-- `geneset_of_interest_receiver_upregulated.csv`
-- `potential_ligands.csv`
-- `ligand_activities.csv`
-- `active_ligand_target_links.csv`
-- `active_ligand_receptor_links.csv`
-- `04_nichenet_summary_figure.png`
+
 
 ## Method Summary
 
@@ -84,6 +81,6 @@ Raw count files were combined into one count matrix. Differential expression was
 ~ donor + cell_type
 ```
 
-The receiver gene set of interest was defined as genes significantly upregulated in the receiver cell type. NicheNet then ranked sender-cell ligands by how well their predicted target genes matched this receiver-cell gene set.
+The receiver gene set of interest is defined as genes significantly upregulated in the receiver cell type. NicheNet ranks sender-cell ligands by how well they match with the predicted target genes to the receiver-cell.
 
-The results should be interpreted as candidate ligand-receptor-target hypotheses, not direct proof of causal signaling.
+The results should be interpreted as candidate ligand-receptor-target hypotheses. 
