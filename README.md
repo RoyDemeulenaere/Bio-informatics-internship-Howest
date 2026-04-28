@@ -82,5 +82,6 @@ Raw count files were combined into one count matrix. Differential expression was
 ```
 
 The receiver gene set of interest is defined as genes significantly upregulated in the receiver cell type. NicheNet ranks sender-cell ligands by how well they match with the predicted target genes to the receiver-cell.
-
 The results should be interpreted as candidate ligand-receptor-target hypotheses. 
+Afterwards a Gene Ontology enrichment is performed on the predicted target genes. Using Cytoscape, networks are created consisting of ligand-receptro-target connections.
+Also Gene Ontology terms are performed to understand the biological meaning of the interaction network.
