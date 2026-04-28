@@ -13,7 +13,6 @@ library(tidyverse)  # data manipulation and plotting
 library(edgeR)      # differential expression analysis
 library(nichenetr)  # NicheNet ligand activity analysis
 library(cowplot)    # combining plots
-library(ggpubr)     # publication-style plots
 
 ### Settings/parameters -------------------------------------------------------
 
