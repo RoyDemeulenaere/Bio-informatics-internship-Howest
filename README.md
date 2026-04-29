@@ -71,6 +71,7 @@ Important output files:
 - `combined_counts_matrix.csv`
 - `sample_metadata.csv`
 - `DE_receiver_vs_sender_edgeR.csv`
+- `geneset_of_interest_receiver_upregulated.csv`
 
 
 ## Method Summary
