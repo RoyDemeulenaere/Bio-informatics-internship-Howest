@@ -14,6 +14,7 @@ library(edgeR)      # differential expression analysis
 library(nichenetr)  # NicheNet ligand activity analysis
 library(cowplot)    # combining plots
 
+
 ### Settings/parameters -------------------------------------------------------
 
 # Main biological question:
@@ -94,7 +95,9 @@ read_count_file <- function(file_path, sample_id) {
     col_names = c("gene", sample_id),
     show_col_types = FALSE
   )
-# if the gene appears more than once, this adds the counts together  
+# if the gene appears more than once, this adds the counts together (isoform!)
+# isoform-information is lost, NicheNet works with gene symbols, not transcript isoforms
+# NicheNet expects one value per gene.
   counts_one_sample <- counts_one_sample %>%
     filter(!is.na(gene), gene != "") %>%
     group_by(gene) %>%
@@ -151,13 +154,14 @@ write_csv(sample_info, file.path(output_dir, "sample_metadata.csv"))
 # Which genes are more highly expressed in the receiver cell type (Myotubes), 
 # compared with the sender cell type (sKMVECs), while accounting for matched donors?
 
-# Create an edgeR object from the count matrix
+# Create an edgeR object from the count matrix: 
+# DGEList puts the raw count data and sample metadata into a format that edgeR can use for further analysis.
 y <- DGEList(
   counts = counts,
   samples = sample_info
 )
 
-# Remove genes with very low expression
+# Remove genes with very low expression (how is this filterByExpr filtered?!: A gene is kept if it has enough expression in enough samples from at least one group. Filter keeps genes with sufficient counts per million.)
 keep_genes <- filterByExpr(
   y,
   group = sample_info$cell_type
@@ -234,6 +238,7 @@ if (length(geneset_oi_raw) < 20) {
 # Give R more time to download the large NicheNet files
 options(timeout = 1200)
 # NicheNet network files for human data
+# nsga2r: Non-dominated sorting genetic algorithm 2 --> genetic algorithm to find the best solutions when you have multiple goals to optimize at once.
 lr_network_url <- "https://zenodo.org/record/7074291/files/lr_network_human_21122021.rds"
 ligand_target_url <- "https://zenodo.org/record/7074291/files/ligand_target_matrix_nsga2r_final.rds"
 weighted_networks_url <- "https://zenodo.org/record/7074291/files/weighted_networks_nsga2r_final.rds"
@@ -306,3 +311,47 @@ message("Expressed receiver genes: ", length(expressed_genes_receiver))
 
 head(expressed_genes_sender)
 head(expressed_genes_receiver)
+
+# Get all ligands and receptors from the NicheNet ligand-receptor network
+all_ligands <- unique(lr_network$from)
+all_receptors <- unique(lr_network$to)
+
+# Keep only ligands expressed in the sender cells
+expressed_ligands <- intersect(all_ligands, expressed_genes_sender)
+
+# Keep only receptors expressed in the receiver cells
+expressed_receptors <- intersect(all_receptors, expressed_genes_receiver)
+
+# Keep only ligand-receptor pairs that are possible in our data
+possible_lr_pairs <- lr_network[
+  lr_network$from %in% expressed_ligands &
+    lr_network$to %in% expressed_receptors,
+]
+
+# Get the possible ligands from these ligand-receptor pairs
+potential_ligands <- unique(possible_lr_pairs$from)
+
+# Keep only ligands that are present in the ligand-target matrix
+potential_ligands <- intersect(
+  potential_ligands,
+  colnames(ligand_target_matrix)
+)
+
+# Keep genes of interest that are present in the NicheNet model
+geneset_oi <- intersect(
+  geneset_oi_raw,
+  rownames(ligand_target_matrix)
+)
+
+# Define background genes:
+# expressed receiver genes that are present in the NicheNet model
+background_expressed_genes <- intersect(
+  expressed_genes_receiver,
+  rownames(ligand_target_matrix)
+)
+
+# Save the NicheNet input files
+write_csv(
+  tibble(gene = geneset_oi),
+  file.path(output_dir, "geneset_of_interest_receiver_upregulated.csv")
+)
