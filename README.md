@@ -73,6 +73,7 @@ Important output files:
 - `DE_receiver_vs_sender_edgeR.csv`
 - `geneset_of_interest_receiver_upregulated.csv`
 - `potential_ligands.csv`
+- `ligand_activities.csv`
 
 
 ## Method Summary
