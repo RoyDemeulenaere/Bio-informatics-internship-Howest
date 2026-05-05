@@ -13,7 +13,7 @@ library(tidyverse)  # data manipulation and plotting
 library(edgeR)      # differential expression analysis
 library(nichenetr)  # NicheNet ligand activity analysis
 library(cowplot)    # combining plots
-
+library(ggpubr)     # publication-style plots
 
 ### Settings/parameters -------------------------------------------------------
 
@@ -51,7 +51,7 @@ network_dir <- file.path(project_dir, "nichenet_networks")
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(network_dir, recursive = TRUE, showWarnings = FALSE)
 
-# Create sample metadata
+# Create sample metadata    (tribble: create small table mannually)
 sample_info <- tribble(
   ~sample_id, ~donor, ~cell_type, ~file_name,
   "GC122806", "788", "Myotubes", "GC122806_KG.count",
@@ -97,7 +97,7 @@ read_count_file <- function(file_path, sample_id) {
   )
 # if the gene appears more than once, this adds the counts together (isoform!)
 # isoform-information is lost, NicheNet works with gene symbols, not transcript isoforms
-# NicheNet expects one value per gene.
+# NicheNet expects one value per gene. 
   counts_one_sample <- counts_one_sample %>%
     filter(!is.na(gene), gene != "") %>%
     group_by(gene) %>%
@@ -154,7 +154,7 @@ write_csv(sample_info, file.path(output_dir, "sample_metadata.csv"))
 # Which genes are more highly expressed in the receiver cell type (Myotubes), 
 # compared with the sender cell type (sKMVECs), while accounting for matched donors?
 
-# Create an edgeR object from the count matrix: 
+# Create an edgeR object from the count matrix
 # DGEList puts the raw count data and sample metadata into a format that edgeR can use for further analysis.
 y <- DGEList(
   counts = counts,
@@ -322,11 +322,10 @@ expressed_ligands <- intersect(all_ligands, expressed_genes_sender)
 # Keep only receptors expressed in the receiver cells
 expressed_receptors <- intersect(all_receptors, expressed_genes_receiver)
 
-# Keep only ligand-receptor pairs that are possible in our data
-possible_lr_pairs <- lr_network[
-  lr_network$from %in% expressed_ligands &
-    lr_network$to %in% expressed_receptors,
-]
+# Keep ligand-receptor pairs where both genes are expressed
+possible_lr_pairs <- lr_network %>%
+  filter(from %in% expressed_ligands) %>%
+  filter(to %in% expressed_receptors)
 
 # Get the possible ligands from these ligand-receptor pairs
 potential_ligands <- unique(possible_lr_pairs$from)
@@ -355,3 +354,237 @@ write_csv(
   tibble(gene = geneset_oi),
   file.path(output_dir, "geneset_of_interest_receiver_upregulated.csv")
 )
+
+write_csv(
+  tibble(gene = background_expressed_genes),
+  file.path(output_dir, "background_receiver_expressed_genes.csv")
+)
+
+write_csv(
+  tibble(ligand = potential_ligands),
+  file.path(output_dir, "potential_ligands.csv")
+)
+
+# Print summary information
+message("Sender cell type: ", sender_celltype)
+message("Receiver cell type: ", receiver_celltype)
+message("Number of expressed sender ligands: ", length(expressed_ligands))
+message("Number of expressed receiver receptors: ", length(expressed_receptors))
+message("Number of potential ligands: ", length(potential_ligands))
+message("Number of genes of interest: ", length(geneset_oi))
+message("Number of background genes: ", length(background_expressed_genes))
+
+# Stop if too few genes of interest are available for NicheNet
+if (length(geneset_oi) < 10) {
+  stop("Too few genes of interest overlap with the NicheNet model.")
+}
+
+
+### 5. NicheNet ligand activity analysis -------------------------------------
+# Which sender ligands best explain the genes that are upregulated in the receiver cells?
+# Ranks SkMVEC ligands based on how well they could explain the Myotube gene expression changes.
+
+# Run NicheNet ligand activity analysis
+ligand_activities <- predict_ligand_activities(
+  geneset = geneset_oi,
+  background_expressed_genes = background_expressed_genes,
+  ligand_target_matrix = ligand_target_matrix,
+  potential_ligands = potential_ligands
+)
+
+# Sort ligands from best to worst
+ligand_activities <- ligand_activities %>%
+  arrange(desc(aupr_corrected)) #Sorts ligands on corrected Area Under the Precision-Recall curve (AUPR).
+# A higher AUPR means the ligand is better at predicting your receiver genes of interest.
+
+# Add a rank column
+ligand_activities <- ligand_activities %>%
+  mutate(rank = row_number())
+
+# Save all ligand activity results
+write_csv(
+  ligand_activities,
+  file.path(output_dir, "ligand_activities.csv")
+)
+# top_n_ligands = 30
+# Select the top ligands
+best_upstream_ligands <- ligand_activities %>%
+  slice_head(n = top_n_ligands)
+
+# Keep only the ligand names
+best_upstream_ligands <- best_upstream_ligands$test_ligand
+
+# Save the top ligand names
+write_lines(
+  best_upstream_ligands,
+  file.path(output_dir, "best_upstream_ligands.txt")
+)
+
+
+### 6. Infer ligand-target and ligand-receptor links -------------------------
+#1. Which target genes are predicted for these ligands?
+#2. Which receptors could these ligands bind to?
+#3. Can we visualize these links as heatmaps and/or Circos plot?
+
+# Get predicted target genes for each top ligand: Ligand-Target Links
+ligand_target_list <- lapply(
+  best_upstream_ligands,
+  get_weighted_ligand_target_links,
+  geneset = geneset_oi,
+  ligand_target_matrix = ligand_target_matrix,
+  n = 200
+)
+
+# Combine all ligand-target results into one table
+active_ligand_target_links_df <- bind_rows(ligand_target_list)
+
+# Save ligand-target links
+write_csv(
+  active_ligand_target_links_df,
+  file.path(output_dir, "active_ligand_target_links.csv")
+)
+
+# Prepare ligand-target data for heatmap
+active_ligand_target_links <- prepare_ligand_target_visualization(
+  ligand_target_df = active_ligand_target_links_df,
+  ligand_target_matrix = ligand_target_matrix,
+  cutoff = 0.25
+)
+
+# Choose ligands and target genes for the heatmap
+order_ligands <- intersect(
+  best_upstream_ligands,
+  colnames(active_ligand_target_links)
+)
+
+order_ligands <- rev(order_ligands)
+
+# Select only the strongest target genes to make the heatmap readable
+target_genes <- active_ligand_target_links_df %>%
+  arrange(desc(weight)) %>%
+  pull(target)
+
+target_genes <- unique(target_genes)
+
+target_genes <- head(target_genes, 100)
+
+order_targets <- intersect(
+  target_genes,
+  rownames(active_ligand_target_links)
+)
+
+# Create the matrix for the ligand-target heatmap
+vis_ligand_target <- active_ligand_target_links[
+  order_targets,
+  order_ligands
+]
+
+vis_ligand_target <- t(vis_ligand_target)
+
+# Make ligand-target heatmap
+p_ligand_target <- make_heatmap_ggplot(
+  vis_ligand_target,
+  y_name = paste("Prioritized", sender_celltype, "ligands"),
+  x_name = paste(receiver_celltype, "upregulated genes"),
+  color = "purple",
+  legend_title = "Regulatory potential"
+)
+
+p_ligand_target <- p_ligand_target +
+  scale_fill_gradient2(
+    low = "whitesmoke",
+    high = "purple"
+  ) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7)
+  )
+
+# Get ligand-receptor links for the top ligands: Ligand-Receptor links
+ligand_receptor_links_df <- get_weighted_ligand_receptor_links(
+  best_upstream_ligands,
+  expressed_receptors,
+  lr_network,
+  weighted_networks$lr_sig
+)
+
+# Save ligand-receptor links
+write_csv(
+  ligand_receptor_links_df,
+  file.path(output_dir, "active_ligand_receptor_links.csv")
+)
+
+# Prepare ligand-receptor data for heatmap
+vis_ligand_receptor <- prepare_ligand_receptor_visualization(
+  ligand_receptor_links_df,
+  best_upstream_ligands,
+  order_hclust = "both"
+)
+
+# Make ligand-receptor heatmap
+p_ligand_receptor <- make_heatmap_ggplot(
+  t(vis_ligand_receptor),
+  y_name = paste("Prioritized", sender_celltype, "ligands"),
+  x_name = paste("Receptors expressed by", receiver_celltype),
+  color = "mediumvioletred",
+  legend_title = "Prior interaction potential"
+)
+
+
+### 7. Summary figures --------------------------------------------------------
+
+# Make a heatmap matrix for ligand activity
+vis_ligand_aupr <- ligand_activities %>%
+  filter(test_ligand %in% best_upstream_ligands) %>%
+  select(test_ligand, aupr_corrected)
+
+# Use ligand names as row names
+vis_ligand_aupr <- as.data.frame(vis_ligand_aupr)
+rownames(vis_ligand_aupr) <- vis_ligand_aupr$test_ligand
+vis_ligand_aupr$test_ligand <- NULL
+
+# Sort ligands by AUPR score
+vis_ligand_aupr <- vis_ligand_aupr %>%
+  arrange(aupr_corrected)
+
+# Convert to matrix for NicheNet heatmap function
+vis_ligand_aupr <- as.matrix(vis_ligand_aupr)
+
+# Create ligand activity heatmap
+p_ligand_aupr <- make_heatmap_ggplot(
+  vis_ligand_aupr,
+  y_name = paste("Prioritized", sender_celltype, "ligands"),
+  x_name = "Ligand activity",
+  color = "darkorange",
+  legend_title = "AUPR"
+)
+
+# Show plots in RStudio
+print(p_ligand_aupr)
+print(p_ligand_target)
+print(p_ligand_receptor)
+
+# Save individual plots
+ggsave(file.path(output_dir, "01_ligand_activity_aupr.png"), p_ligand_aupr, width = 5, height = 7, dpi = 300)
+ggsave(file.path(output_dir, "02_ligand_target_heatmap.png"), p_ligand_target, width = 14, height = 7, dpi = 300)
+ggsave(file.path(output_dir, "03_ligand_receptor_heatmap.png"), p_ligand_receptor, width = 10, height = 7, dpi = 300)
+
+# Combine the three plots into one figure
+combined_without_legends <- plot_grid(
+  p_ligand_aupr,
+  p_ligand_target,
+  p_ligand_receptor,
+  ncol = 1
+)
+
+# Show the combined figure
+print(combined_without_legends)
+
+# Save the combined figure
+ggsave(
+  file.path(output_dir, "04_nichenet_summary_figure.png"),
+  combined_without_legends,
+  width = 12,
+  height = 13,
+  dpi = 300
+)
+
+
