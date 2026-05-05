@@ -74,6 +74,9 @@ Important output files:
 - `geneset_of_interest_receiver_upregulated.csv`
 - `potential_ligands.csv`
 - `ligand_activities.csv`
+- `active_ligand_target_links.csv`
+- `active_ligand_receptor_links.csv`
+- `04_nichenet_summary_figure.png`
 
 
 ## Method Summary
