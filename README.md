@@ -1,6 +1,6 @@
 # Bioinformatics Internship: NicheNet Analysis
 
-Title research project: Interactomics Analysis of Cell-Cell Communication Between Skeletal Muscle Microvascular Endothelial Cells and Myotubes.
+Title research project: In vitro interactomics of donor-derived SkMVECs and myotubes using NicheNet.
 
 This repository contains the assignment workflow for a NicheNet ligand activity analysis of matched donor gene count files.
 To find out how myoblasts and Skeletal Microvascular Endothelial cells (SkMVECs) interact with each other.
