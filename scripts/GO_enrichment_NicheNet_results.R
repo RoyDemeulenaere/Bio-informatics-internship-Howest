@@ -342,5 +342,5 @@ analyze_nichenet_folder(
   "Myotubes_to_SkMVECs"
 )
 
-message("GO enrichment finished. Results are in: ", go_output_dir)
+
 
