@@ -587,4 +587,131 @@ ggsave(
   dpi = 300
 )
 
+### 8. Assess quality of predicted ligands -----------------------------------
 
+# This step tests how well the top 30 Myotube ligands can distinguish
+# SkMVEC genes of interest from background SkMVEC-expressed genes.
+#
+# In the reverse analysis:
+# sender cell type = Myotubes
+# receiver cell type = SkMVECs
+#
+# So this quality check evaluates whether the prioritized Myotube ligands
+# are useful for explaining the SkMVEC-upregulated receiver gene set.
+
+set.seed(123)
+
+k <- 3   # number of cross-validation folds
+n <- 10  # number of repeated runs
+
+# Build random forest models
+predictions_list <- lapply(
+  1:n,
+  assess_rf_class_probabilities,
+  folds = k,
+  geneset = geneset_oi,
+  background_expressed_genes = background_expressed_genes,
+  ligands_oi = best_upstream_ligands,
+  ligand_target_matrix = ligand_target_matrix
+)
+
+# Calculate model performance metrics
+performances_cv <- bind_rows(
+  lapply(predictions_list, classification_evaluation_continuous_pred_wrapper)
+)
+
+# Average performance over all runs
+performance_summary <- performances_cv %>%
+  summarise(
+    across(where(is.numeric), mean, na.rm = TRUE)
+  )
+
+write_csv(
+  performances_cv,
+  file.path(output_dir, "ligand_quality_random_forest_performances.csv")
+)
+
+write_csv(
+  performance_summary,
+  file.path(output_dir, "ligand_quality_random_forest_summary.csv")
+)
+
+# Calculate how many true target genes are found among the top predicted genes
+fraction_cv <- bind_rows(
+  lapply(
+    predictions_list,
+    calculate_fraction_top_predicted,
+    quantile_cutoff = 0.95
+  ),
+  .id = "round"
+)
+
+write_csv(
+  fraction_cv,
+  file.path(output_dir, "ligand_quality_top_predicted_fraction.csv")
+)
+
+# Mean fraction for true target genes
+mean_true_targets <- fraction_cv %>%
+  dplyr::filter(true_target) %>%
+  summarise(mean_fraction = mean(fraction_positive_predicted, na.rm = TRUE))
+
+# Mean fraction for background genes
+mean_background_genes <- fraction_cv %>%
+  dplyr::filter(!true_target) %>%
+  summarise(mean_fraction = mean(fraction_positive_predicted, na.rm = TRUE))
+
+write_csv(
+  mean_true_targets,
+  file.path(output_dir, "ligand_quality_mean_true_targets.csv")
+)
+
+write_csv(
+  mean_background_genes,
+  file.path(output_dir, "ligand_quality_mean_background_genes.csv")
+)
+
+# Fisher exact test for enrichment of true targets among top predicted genes
+fisher_results <- lapply(
+  predictions_list,
+  calculate_fraction_top_predicted_fisher,
+  quantile_cutoff = 0.95
+)
+
+# Save Fisher test p-values
+fisher_results_table <- tibble(
+  round = seq_along(fisher_results),
+  fisher_result = sapply(
+    fisher_results,
+    function(x) {
+      if (is.list(x) && "p.value" %in% names(x)) {
+        return(x$p.value)
+      } else {
+        return(as.numeric(x)[1])
+      }
+    }
+  )
+)
+
+write_csv(
+  fisher_results_table,
+  file.path(output_dir, "ligand_quality_fisher_tests.csv")
+)
+
+# Get genes with the highest prediction values
+top_predicted_genes <- lapply(
+  1:n,
+  get_top_predicted_genes,
+  predictions_list
+)
+
+top_predicted_genes <- reduce(
+  top_predicted_genes,
+  full_join,
+  by = c("gene", "true_target")
+)
+
+write_csv(
+  top_predicted_genes,
+  file.path(output_dir, "ligand_quality_top_predicted_genes.csv")
+)
