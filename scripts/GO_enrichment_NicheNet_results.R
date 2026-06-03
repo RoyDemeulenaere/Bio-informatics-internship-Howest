@@ -250,171 +250,111 @@ write_csv(
   file.path(go_output_dir, "mapped_reverse_background_genes.csv")
 )
 
-### 6. Make dotplots ----------------------------------------------------------
-#make a dotplot from the GO enrichment result and show the top 15 enriched GO terms.
-p1 <- dotplot(go_forward_receiver, showCategory = 15) +
-  ggtitle("SkMVECs to Myotubes - receiver upregulated genes")
+### 6. Make and save dotplots/barplots ---------------------------------------
 
-p2 <- dotplot(go_forward_targets, showCategory = 15) +
-  ggtitle("SkMVECs to Myotubes - NicheNet target genes")
-
-p3 <- dotplot(go_reverse_receiver, showCategory = 15) +
-  ggtitle("Myotubes to SkMVECs - receiver upregulated genes")
-
-p4 <- dotplot(go_reverse_targets, showCategory = 15) +
-  ggtitle("Myotubes to SkMVECs - NicheNet target genes")
-
-### 7. Save dotplots ----------------------------------------------------------
-
-ggsave(
-  file.path(go_output_dir, "SkMVECs_to_Myotubes_receiver_upregulated_GO_BP_dotplot.png"),
-  p1,
-  width = 10,
-  height = 7,
-  dpi = 300
-)
-
-ggsave(
-  file.path(go_output_dir, "SkMVECs_to_Myotubes_nichenet_targets_GO_BP_dotplot.png"),
-  p2,
-  width = 10,
-  height = 7,
-  dpi = 300
-)
-
-ggsave(
-  file.path(go_output_dir, "Myotubes_to_SkMVECs_receiver_upregulated_GO_BP_dotplot.png"),
-  p3,
-  width = 10,
-  height = 7,
-  dpi = 300
-)
-
-ggsave(
-  file.path(go_output_dir, "Myotubes_to_SkMVECs_nichenet_targets_GO_BP_dotplot.png"),
-  p4,
-  width = 10,
-  height = 7,
-  dpi = 300
-)
-
-###############################################################################
-
-run_go_enrichment <- function(gene_symbols, analysis_name, gene_set_name) {
-
-  gene_symbols <- unique(gene_symbols)
-  gene_symbols <- gene_symbols[!is.na(gene_symbols) & gene_symbols != ""]
-
-  if (length(gene_symbols) < 10) {
-    warning("Too few genes for GO enrichment: ", analysis_name, " - ", gene_set_name)
-    return(NULL)
-  }
-
-  # Convert gene symbols to Entrez IDs, because clusterProfiler uses Entrez IDs.
-  gene_ids <- bitr(
-    gene_symbols,
-    fromType = "SYMBOL",
-    toType = "ENTREZID",
-    OrgDb = org.Hs.eg.db
+# Convert GeneRatio from text such as "12/150" into a number.
+calculate_gene_ratio <- function(gene_ratio) {
+  map_dbl(
+    gene_ratio,
+    function(x) {
+      parts <- str_split(x, "/", simplify = TRUE)
+      as.numeric(parts[1]) / as.numeric(parts[2])
+    }
   )
-
-  if (nrow(gene_ids) < 10) {
-    warning("Too few genes could be mapped to Entrez IDs: ", analysis_name, " - ", gene_set_name)
-    return(NULL)
-  }
-
-  go_result <- enrichGO(
-    gene = gene_ids$ENTREZID,
-    OrgDb = org.Hs.eg.db,
-    keyType = "ENTREZID",
-    ont = "BP",
-    pAdjustMethod = "BH",
-    pvalueCutoff = 0.05,
-    qvalueCutoff = 0.05,
-    readable = TRUE
-  )
-
-  result_table <- as.data.frame(go_result)
-
-  output_prefix <- paste(analysis_name, gene_set_name, "GO_BP", sep = "_")
-
-  write_csv(
-    result_table,
-    file.path(go_output_dir, paste0(output_prefix, "_results.csv"))
-  )
-
-  if (nrow(result_table) > 0) {
-    dot_plot <- dotplot(go_result, showCategory = 15) +
-      ggtitle(paste(analysis_name, "-", gene_set_name))
-
-    ggsave(
-      file.path(go_output_dir, paste0(output_prefix, "_dotplot.png")),
-      dot_plot,
-      width = 10,
-      height = 7,
-      dpi = 300
-    )
-
-    bar_plot <- barplot(go_result, showCategory = 15) +
-      ggtitle(paste(analysis_name, "-", gene_set_name))
-
-    ggsave(
-      file.path(go_output_dir, paste0(output_prefix, "_barplot.png")),
-      bar_plot,
-      width = 10,
-      height = 7,
-      dpi = 300
-    )
-  }
-
-  return(go_result)
 }
 
-### 3. Function to read NicheNet output and analyze it ------------------------
+make_go_dotplot_and_barplot <- function(go_result, plot_title, output_prefix) {
 
-analyze_nichenet_folder <- function(results_dir, analysis_name) {
-
-  geneset_file <- file.path(results_dir, "geneset_of_interest_receiver_upregulated.csv")
-  target_file <- file.path(results_dir, "active_ligand_target_links.csv")
-
-  if (!file.exists(geneset_file)) {
-    warning("Missing file: ", geneset_file)
-  } else {
-    receiver_upregulated_genes <- read_csv(geneset_file, show_col_types = FALSE) %>%
-      pull(gene)
-
-    run_go_enrichment(
-      receiver_upregulated_genes,
-      analysis_name,
-      "receiver_upregulated_genes"
+  # Select one shared top 15 GO-term table.
+  # Both the dotplot and barplot are made from this exact same table,
+  # so the GO term list and p.adjust values are identical.
+  plot_table <- as_tibble(go_result@result) %>%
+    arrange(p.adjust) %>%
+    slice_head(n = 15) %>%
+    mutate(
+      GeneRatio_number = calculate_gene_ratio(GeneRatio),
+      Description = factor(Description, levels = rev(Description))
     )
-  }
 
-  if (!file.exists(target_file)) {
-    warning("Missing file: ", target_file)
-  } else {
-    nichenet_targets <- read_csv(target_file, show_col_types = FALSE) %>%
-      pull(target)
-
-    run_go_enrichment(
-      nichenet_targets,
-      analysis_name,
-      "nichenet_predicted_targets"
+  dot_plot <- ggplot(
+    plot_table,
+    aes(
+      x = GeneRatio_number,
+      y = Description,
+      size = Count,
+      color = p.adjust
     )
-  }
+  ) +
+    geom_point() +
+    scale_color_gradient(low = "red", high = "blue") +
+    labs(
+      title = plot_title,
+      x = "GeneRatio",
+      y = NULL,
+      color = "p.adjust",
+      size = "Count"
+    ) +
+    theme_bw()
+
+  bar_plot <- ggplot(
+    plot_table,
+    aes(
+      x = Count,
+      y = Description,
+      fill = p.adjust
+    )
+  ) +
+    geom_col() +
+    scale_fill_gradient(low = "red", high = "blue") +
+    labs(
+      title = plot_title,
+      x = "Count",
+      y = NULL,
+      fill = "p.adjust"
+    ) +
+    theme_bw()
+
+  ggsave(
+    file.path(go_output_dir, paste0(output_prefix, "_dotplot.png")),
+    dot_plot,
+    width = 10,
+    height = 7,
+    dpi = 300
+  )
+
+  ggsave(
+    file.path(go_output_dir, paste0(output_prefix, "_barplot.png")),
+    bar_plot,
+    width = 10,
+    height = 7,
+    dpi = 300
+  )
 }
 
-### 4. Run GO enrichment for both NicheNet directions -------------------------
-
-analyze_nichenet_folder(
-  forward_results_dir,
-  "SkMVECs_to_Myotubes"
+make_go_dotplot_and_barplot(
+  go_forward_receiver,
+  "SkMVECs to Myotubes - receiver upregulated genes",
+  "SkMVECs_to_Myotubes_receiver_upregulated_GO_BP"
 )
 
-analyze_nichenet_folder(
-  reverse_results_dir,
-  "Myotubes_to_SkMVECs"
+make_go_dotplot_and_barplot(
+  go_forward_targets,
+  "SkMVECs to Myotubes - NicheNet target genes",
+  "SkMVECs_to_Myotubes_nichenet_targets_GO_BP"
 )
+
+make_go_dotplot_and_barplot(
+  go_reverse_receiver,
+  "Myotubes to SkMVECs - receiver upregulated genes",
+  "Myotubes_to_SkMVECs_receiver_upregulated_GO_BP"
+)
+
+make_go_dotplot_and_barplot(
+  go_reverse_targets,
+  "Myotubes to SkMVECs - NicheNet target genes",
+  "Myotubes_to_SkMVECs_nichenet_targets_GO_BP"
+)
+
 
 
 
