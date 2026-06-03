@@ -213,8 +213,8 @@ de_results$gene <- rownames(de_results)
 # Convert to tibble and sort by FDR
 de_results <- as_tibble(de_results)
 de_results <- de_results %>%
-  select(gene, everything()) %>%
-  arrange(FDR)
+  dplyr::select(gene, everything()) %>%
+  dplyr::arrange(FDR)
 
 # Save the differential expression results
 write_csv(
@@ -534,7 +534,7 @@ p_ligand_receptor <- make_heatmap_ggplot(
 # Make a heatmap matrix for ligand activity
 vis_ligand_aupr <- ligand_activities %>%
   filter(test_ligand %in% best_upstream_ligands) %>%
-  select(test_ligand, aupr_corrected)
+  dpylr::select(test_ligand, aupr_corrected)
 
 # Use ligand names as row names
 vis_ligand_aupr <- as.data.frame(vis_ligand_aupr)
