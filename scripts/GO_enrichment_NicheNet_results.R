@@ -215,6 +215,41 @@ write_csv(
   file.path(go_output_dir, "Myotubes_to_SkMVECs_nichenet_targets_GO_BP_results.csv")
 )
 
+### Save gene ID mapping tables -----------------------------------
+
+# These files show which gene symbols were successfully converted to Entrez IDs.
+# This is useful because genes that cannot be mapped are not included in GO enrichment.
+
+write_csv(
+  forward_receiver_ids,
+  file.path(go_output_dir, "mapped_forward_receiver_genes.csv")
+)
+
+write_csv(
+  forward_target_ids,
+  file.path(go_output_dir, "mapped_forward_target_genes.csv")
+)
+
+write_csv(
+  reverse_receiver_ids,
+  file.path(go_output_dir, "mapped_reverse_receiver_genes.csv")
+)
+
+write_csv(
+  reverse_target_ids,
+  file.path(go_output_dir, "mapped_reverse_target_genes.csv")
+)
+
+write_csv(
+  forward_background_ids,
+  file.path(go_output_dir, "mapped_forward_background_genes.csv")
+)
+
+write_csv(
+  reverse_background_ids,
+  file.path(go_output_dir, "mapped_reverse_background_genes.csv")
+)
+
 ### 6. Make dotplots ----------------------------------------------------------
 #make a dotplot from the GO enrichment result and show the top 15 enriched GO terms.
 p1 <- dotplot(go_forward_receiver, showCategory = 15) +
