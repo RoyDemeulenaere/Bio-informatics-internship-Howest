@@ -75,6 +75,26 @@ reverse_target_genes <- read_csv(
   pull(target) %>%
   unique()
 
+### Read background gene lists -----------------------------------------------
+
+# These background genes are all genes expressed in the receiver cell type.
+# They make the GO enrichment more fair, because GO will comapre the gene list
+# against genes that were actually detectable in the RNA-seq data.
+
+forward_background_genes <- read_csv(
+  file.path(forward_results_dir, "background_receiver_expressed_genes.csv"),
+  show_col_types = FALSE
+) %>%
+  pull(gene) %>%
+  unique()
+
+reverse_background_genes <- read_csv(
+  file.path(reverse_results_dir, "background_receiver_expressed_genes.csv"),
+  show_col_types = FALSE
+) %>%
+  pull(gene) %>%
+  unique()
+
 ### 3. Convert gene symbols to Entrez IDs -------------------------------------
 
 # clusterProfiler works best with Entrez gene IDs. 
@@ -107,11 +127,27 @@ reverse_target_ids <- bitr(
   OrgDb = org.Hs.eg.db
 )
 
+# Convert background genes to Entrez IDs
+forward_background_ids <- bitr(
+  forward_background_genes,
+  fromType = "SYMBOL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+reverse_background_ids <- bitr(
+  reverse_background_genes,
+  fromType = "SYMBOL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
 ### 4. Run GO enrichment ------------------------------------------------------
 
 # GO biological process enrichment for forward receiver-upregulated genes
 go_forward_receiver <- enrichGO(
   gene = forward_receiver_ids$ENTREZID,
+  universe = forward_background_ids$ENTREZID,
   OrgDb = org.Hs.eg.db, # database for Homo Sapiens
   keyType = "ENTREZID", # 
   ont = "BP", # Biological Process
@@ -123,6 +159,7 @@ go_forward_receiver <- enrichGO(
 # GO Biological Process enrichment for forward NicheNet target genes.
 go_forward_targets <- enrichGO(
   gene = forward_target_ids$ENTREZID,
+  universe = forward_background_ids$ENTREZID,
   OrgDb = org.Hs.eg.db,
   keyType = "ENTREZID",
   ont = "BP",
@@ -134,6 +171,7 @@ go_forward_targets <- enrichGO(
 # GO Biological Process enrichment for reverse receiver-upregulated genes
 go_reverse_receiver <- enrichGO(
   gene = reverse_receiver_ids$ENTREZID,
+  universe = reverse_background_ids$ENTREZID,
   OrgDb = org.Hs.eg.db,
   keyType = "ENTREZID",
   ont = "BP",
@@ -145,6 +183,7 @@ go_reverse_receiver <- enrichGO(
 # GO Biological Process enrichment for reverse NicheNet target genes
 go_reverse_targets <- enrichGO(
   gene = reverse_target_ids$ENTREZID,
+  universe = reverse_background_ids$ENTREZID,
   OrgDb = org.Hs.eg.db,
   keyType = "ENTREZID",
   ont = "BP",
