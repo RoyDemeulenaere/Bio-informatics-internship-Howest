@@ -251,17 +251,22 @@ write.csv(
 )
 
 # ------------------------------------------------------------
-# 10. Compare QuickGO myoblast fusion genes with DESeq2 results
+# 10. Compare selected QuickGO gene lists with DESeq2 results
 # ------------------------------------------------------------
 
-# This section compares genes from the GO terms:
+# This section compares genes from three GO terms:
 # GO:0007520 - myoblast fusion
-# 
-# The goal is to check whether these myoblast-fusion genes:
+# GO:0051450 - myoblast proliferation
+# GO:0002040 - sprouting angiogenesis
+#
+# The goal is to check whether these GO genes:
 # 1. are present in the SkMVEC vs HUVEC dataset
 # 2. are expressed in SkMVECs and/or HUVECs
 # 3. are higher in SkMVECs or higher in HUVECs
 # 4. are statistically significantly different
+#
+# This helps compare biological themes that are relevant for the project:
+# muscle-cell fusion, muscle-cell proliferation and endothelial sprouting.
 
 # Important:
 # In this script, the contrast is:
@@ -274,13 +279,12 @@ write.csv(
 positive_lfc_group <- "SkMVECs"
 negative_lfc_group <- "HUVECs"
 
-
 # ------------------------------------------------------------
-# 10.1 Add the QuickGO gene list
+# 10.1 Define GO gene lists
 # ------------------------------------------------------------
 
-## GO:0007520 - Myoblast fusion
-## Homo Sapiens annotations from QuickGO
+# GO:0007520 - myoblast fusion
+# Homo sapiens annotations from QuickGO
 
 go_myoblast_fusion_genes <- c(
   "ADAM12",
@@ -305,343 +309,410 @@ go_myoblast_fusion_genes <- c(
   "PTGFRN"
 )
 
-# ------------------------------------------------------------
-# 10.2 Prepare the DESeq2 results table
-# ------------------------------------------------------------
+# GO:0051450 - myoblast proliferation
+# Homo sapiens annotations from QuickGO
 
-# Make a copy of the full DESeq2 results table.
-# We use the full table, not only the significant genes,
-# because some QuickGO genes may be present but not significant.
+go_myoblast_proliferation_genes <- c(
+  "ABL1",
+  "ATOH8",
+  "FES",
+  "FOS",
+  "IGF1",
+  "KRAS"
+)
 
-results_for_go <- as.data.frame(results_table)
+# GO:0002040 - sprouting angiogenesis
+# Homo sapiens annotations from QuickGO
 
-# If gene names are not stored in a gene column,
-# add them from the row names.
-if (!"gene" %in% colnames(results_for_go)) {
-  results_for_go <- rownames_to_column(results_for_go, var = "gene")
-}
-
-# Inspect the first genes and the availalbe columns
-head(results_for_go)
-colnames(results_for_go)
-head(results_for_go$gene,20)
-
-# Clean the gene names by removing extra spaces.
-# This makes it easier to match the QuickGO genes with the DESeq2 results.
-
-results_for_go <- results_for_go %>%
-  mutate(
-    gene_match = trimws(as.character(gene))
-  )
-
-# ------------------------------------------------------------
-# 10.3 Create a table from the GO gene list
-# ------------------------------------------------------------
-
-go_myoblast_fusion_table <- tibble(
-  go_term = "GO:0007520",
-  go_description = "myoblast fusion",
-  go_gene = go_myoblast_fusion_genes,
-  gene_match = trimws(go_myoblast_fusion_genes)
+go_sprouting_angiogenesis_genes <- c(
+  "ADGRA2",
+  "ANGPT1",
+  "CCBE1",
+  "CDH13",
+  "E2F7",
+  "E2F8",
+  "ENG",
+  "ESM1",
+  "FLT1",
+  "FLT4",
+  "JMJD6",
+  "LOXL2",
+  "NAXE",
+  "NRP1",
+  "OTULIN",
+  "PARVA",
+  "PGF",
+  "PTK2B",
+  "RAMP2",
+  "RECK",
+  "RNF213",
+  "RSPO3",
+  "SEMA3E",
+  "TEK",
+  "TGFB1",
+  "THBS1",
+  "TMEM215",
+  "VEGFA",
+  "VEGFB",
+  "VEGFC",
+  "VEGFD",
+  "YJEFN3"
 )
 
 # ------------------------------------------------------------
-# 10.4 Compare GO genes with the DESeq2 results
+# 10.2 Function to compare a GO gene list with SkMVEC vs HUVEC results
 # ------------------------------------------------------------
 
-go_myoblast_fusion_comparison <- go_myoblast_fusion_table %>%
-  left_join(
-    results_for_go %>%
-      dplyr::select(
-        gene_match,
-        matched_gene = gene,
-        baseMean,
-        log2FoldChange,
-        lfcSE,
-        pvalue,
-        padj
-      ),
-    by = "gene_match"
-  ) %>%
-  mutate(
-    found_in_results_table = !is.na(matched_gene),
-    statistically_significant = !is.na(padj) & padj <= 0.05
-  )
-
-
-# ------------------------------------------------------------
-# 10.5 Add mean normalized expression per cell type
-# ------------------------------------------------------------
-
-# DESeq2 normalized counts correct for differences in sequencing depth.
-# This allows us to compare average expression between samples more fairly.
-
-normalized_count_matrix <- counts(dds, normalized = TRUE)
-
-sample_information <- as.data.frame(colData(dds))
-
-# Select the SkMVEC and HUVEC samples based on the condition column.
-skmvec_samples <- rownames(sample_information)[
-  sample_information$condition == "confluent_SkMVECs"
-]
-
-huvec_samples <- rownames(sample_information)[
-  sample_information$condition == "confluent_HUVECs"
-]
-
-expression_summary <- tibble(
-  gene = rownames(normalized_count_matrix),
-  
-  mean_normalized_count_SkMVECs = rowMeans(
-    normalized_count_matrix[, skmvec_samples, drop = FALSE]
-  ),
-  
-  mean_normalized_count_HUVECs = rowMeans(
-    normalized_count_matrix[, huvec_samples, drop = FALSE]
-  )
-) %>%
-  mutate(
-    gene_match = trimws(as.character(gene))
-  )
-
-go_myoblast_fusion_comparison <- go_myoblast_fusion_comparison %>%
-  left_join(
-    expression_summary %>%
-      dplyr::select(
-        gene_match,
-        mean_normalized_count_SkMVECs,
-        mean_normalized_count_HUVECs
-      ),
-    by = "gene_match"
-  )
-
-
-# ------------------------------------------------------------
-# 10.6 Add expressed / not expressed classification
-# ------------------------------------------------------------
-
-# Here, a gene is called expressed if it has at least 10 raw reads
-# in at least 2 samples of that cell type.
+# This function compares one GO gene list with the DESeq2 results.
+# This way, we do not have to copy the same code three times.
 #
-# This is similar to the low-count filtering used earlier.
+# For every GO gene, the function checks:
+# 1. Is the gene present in the DESeq2 result table?
+# 2. Is the gene expressed in SkMVECs?
+# 3. Is the gene expressed in HUVECs?
+# 4. Is the gene higher in SkMVECs or HUVECs?
+# 5. Is the difference statistically significant?
 
-raw_count_matrix <- counts(dds, normalized = FALSE)
-
-min_raw_count <- 10
-min_number_of_samples <- 2
-
-expression_detection_summary <- tibble(
-  gene = rownames(raw_count_matrix),
+compare_go_genes <- function(go_genes, go_id, go_description) {
   
-  number_of_SkMVEC_samples_expressed = rowSums(
-    raw_count_matrix[, skmvec_samples, drop = FALSE] >= min_raw_count
-  ),
+  # ------------------------------------------------------------
+  # Prepare the full DESeq2 results table
+  # ------------------------------------------------------------
   
-  number_of_HUVEC_samples_expressed = rowSums(
-    raw_count_matrix[, huvec_samples, drop = FALSE] >= min_raw_count
+  # We use the full results_table, not only significant genes.
+  # This is important because a GO gene can be present in the dataset
+  # even if it is not significantly different between SkMVECs and HUVECs.
+  
+  results_for_go <- as.data.frame(results_table)
+  
+  # If gene names are not already in a column, add them from the row names.
+  if (!"gene" %in% colnames(results_for_go)) {
+    results_for_go <- rownames_to_column(results_for_go, var = "gene")
+  }
+  
+  # Clean gene names by removing extra spaces.
+  results_for_go <- results_for_go %>%
+    mutate(
+      gene_match = trimws(as.character(gene))
+    )
+  
+  # ------------------------------------------------------------
+  # Create a table from the GO gene list
+  # ------------------------------------------------------------
+  
+  go_table <- tibble(
+    go_term = go_id,
+    go_description = go_description,
+    go_gene = go_genes,
+    gene_match = trimws(go_genes)
   )
-) %>%
-  mutate(
-    gene_match = trimws(as.character(gene)),
+  
+  # ------------------------------------------------------------
+  # Match GO genes with the DESeq2 results
+  # ------------------------------------------------------------
+  
+  go_comparison <- go_table %>%
+    left_join(
+      results_for_go %>%
+        dplyr::select(
+          gene_match,
+          matched_gene = gene,
+          baseMean,
+          log2FoldChange,
+          lfcSE,
+          pvalue,
+          padj
+        ),
+      by = "gene_match"
+    ) %>%
+    mutate(
+      found_in_results_table = !is.na(matched_gene),
+      statistically_significant = !is.na(padj) & padj <= 0.05
+    )
+  
+  # ------------------------------------------------------------
+  # Add mean normalized expression per cell type
+  # ------------------------------------------------------------
+  
+  # Normalized counts are corrected for sequencing depth.
+  # This allows us to compare expression values between samples more fairly.
+  
+  normalized_count_matrix <- counts(dds, normalized = TRUE)
+  sample_information <- as.data.frame(colData(dds))
+  
+  # Select SkMVEC and HUVEC samples.
+  skmvec_samples <- rownames(sample_information)[
+    sample_information$condition == "confluent_SkMVECs"
+  ]
+  
+  huvec_samples <- rownames(sample_information)[
+    sample_information$condition == "confluent_HUVECs"
+  ]
+  
+  expression_summary <- tibble(
+    gene = rownames(normalized_count_matrix),
     
-    expressed_in_SkMVECs =
-      number_of_SkMVEC_samples_expressed >= min_number_of_samples,
+    mean_normalized_count_SkMVECs = rowMeans(
+      normalized_count_matrix[, skmvec_samples, drop = FALSE]
+    ),
     
-    expressed_in_HUVECs =
-      number_of_HUVEC_samples_expressed >= min_number_of_samples
-  )
-
-go_myoblast_fusion_comparison <- go_myoblast_fusion_comparison %>%
-  left_join(
-    expression_detection_summary %>%
-      dplyr::select(
-        gene_match,
-        number_of_SkMVEC_samples_expressed,
-        number_of_HUVEC_samples_expressed,
-        expressed_in_SkMVECs,
-        expressed_in_HUVECs
-      ),
-    by = "gene_match"
-  )
-
-
-# ------------------------------------------------------------
-# 10.7 Add an automatic interpretation
-# ------------------------------------------------------------
-
-go_myoblast_fusion_comparison <- go_myoblast_fusion_comparison %>%
-  mutate(
-    interpretation = case_when(
-      !found_in_results_table ~
-        "Not found in the filtered DESeq2 dataset",
+    mean_normalized_count_HUVECs = rowMeans(
+      normalized_count_matrix[, huvec_samples, drop = FALSE]
+    )
+  ) %>%
+    mutate(
+      gene_match = trimws(as.character(gene))
+    )
+  
+  go_comparison <- go_comparison %>%
+    left_join(
+      expression_summary %>%
+        dplyr::select(
+          gene_match,
+          mean_normalized_count_SkMVECs,
+          mean_normalized_count_HUVECs
+        ),
+      by = "gene_match"
+    )
+  
+  # ------------------------------------------------------------
+  # Add expressed / not expressed information
+  # ------------------------------------------------------------
+  
+  # A gene is called expressed if it has at least 10 raw reads
+  # in at least 2 samples of that cell type.
+  
+  raw_count_matrix <- counts(dds, normalized = FALSE)
+  
+  min_raw_count <- 10
+  min_number_of_samples <- 2
+  
+  expression_detection_summary <- tibble(
+    gene = rownames(raw_count_matrix),
+    
+    number_of_SkMVEC_samples_expressed = rowSums(
+      raw_count_matrix[, skmvec_samples, drop = FALSE] >= min_raw_count
+    ),
+    
+    number_of_HUVEC_samples_expressed = rowSums(
+      raw_count_matrix[, huvec_samples, drop = FALSE] >= min_raw_count
+    )
+  ) %>%
+    mutate(
+      gene_match = trimws(as.character(gene)),
       
-      is.na(padj) ~
-        "Detected, but no adjusted p-value available",
+      expressed_in_SkMVECs =
+        number_of_SkMVEC_samples_expressed >= min_number_of_samples,
       
-      padj <= 0.05 & log2FoldChange >= 1 ~
-        paste0("Significantly higher in ", positive_lfc_group),
-      
-      padj <= 0.05 & log2FoldChange <= -1 ~
-        paste0("Significantly higher in ", negative_lfc_group),
-      
-      padj <= 0.05 & abs(log2FoldChange) < 1 ~
-        "Statistically significant, but absolute log2FoldChange is smaller than 1",
-      
-      padj > 0.05 & log2FoldChange > 0 ~
-        paste0("Higher in ", positive_lfc_group, ", but not statistically significant"),
-      
-      padj > 0.05 & log2FoldChange < 0 ~
-        paste0("Higher in ", negative_lfc_group, ", but not statistically significant"),
-      
-      TRUE ~
-        "No clear difference"
+      expressed_in_HUVECs =
+        number_of_HUVEC_samples_expressed >= min_number_of_samples
+    )
+  
+  go_comparison <- go_comparison %>%
+    left_join(
+      expression_detection_summary %>%
+        dplyr::select(
+          gene_match,
+          number_of_SkMVEC_samples_expressed,
+          number_of_HUVEC_samples_expressed,
+          expressed_in_SkMVECs,
+          expressed_in_HUVECs
+        ),
+      by = "gene_match"
+    )
+  
+  # ------------------------------------------------------------
+  # Add automatic interpretation
+  # ------------------------------------------------------------
+  
+  # Because the DESeq2 contrast is SkMVECs vs HUVECs:
+  # positive log2FoldChange = higher in SkMVECs
+  # negative log2FoldChange = higher in HUVECs
+  
+  go_comparison <- go_comparison %>%
+    mutate(
+      interpretation = case_when(
+        !found_in_results_table ~
+          "Not found in the filtered DESeq2 dataset",
+        
+        is.na(padj) ~
+          "Detected, but no adjusted p-value available",
+        
+        padj <= 0.05 & log2FoldChange >= 1 ~
+          "Significantly higher in SkMVECs",
+        
+        padj <= 0.05 & log2FoldChange <= -1 ~
+          "Significantly higher in HUVECs",
+        
+        padj <= 0.05 & abs(log2FoldChange) < 1 ~
+          "Statistically significant, but absolute log2FoldChange is smaller than 1",
+        
+        padj > 0.05 & log2FoldChange > 0 ~
+          "Higher in SkMVECs, but not statistically significant",
+        
+        padj > 0.05 & log2FoldChange < 0 ~
+          "Higher in HUVECs, but not statistically significant",
+        
+        TRUE ~
+          "No clear difference"
+      )
+    )
+  
+  # ------------------------------------------------------------
+  # Save full table
+  # ------------------------------------------------------------
+  
+  # Make a clean file name.
+  file_name <- paste0(go_id, "_", go_description)
+  file_name <- gsub(":", "_", file_name)
+  file_name <- gsub(" ", "_", file_name)
+  
+  write_csv(
+    go_comparison,
+    file.path(
+      output_directory,
+      paste0(file_name, "_complete_comparison.csv")
     )
   )
-
-################## Compact table
-go_myoblast_fusion_word_table <- go_myoblast_fusion_comparison %>%
-  select(
-    go_gene,
-    found_in_results_table,
-    baseMean,
-    log2FoldChange,
-    padj,
-    statistically_significant,
-    interpretation
-  ) %>%
-  arrange(desc(log2FoldChange))
-
-go_myoblast_fusion_word_table <- go_myoblast_fusion_word_table %>%
-  rename(
-    Gene = go_gene,
-    `Found in dataset` = found_in_results_table,
-    `Mean normalized expression` = baseMean,
-    `Log2 fold change` = log2FoldChange,
-    `Adjusted p-value` = padj,
-    `Statistically significant` = statistically_significant,
-    Interpretation = interpretation
+  
+  # ------------------------------------------------------------
+  # Save smaller Word-friendly table
+  # ------------------------------------------------------------
+  
+  # This table is easier to copy into Word or use in your EIN.
+  word_table <- go_comparison %>%
+    dplyr::select(
+      go_gene,
+      mean_normalized_count_SkMVECs,
+      mean_normalized_count_HUVECs,
+      log2FoldChange,
+      padj,
+      interpretation
+    ) %>%
+    dplyr::rename(
+      `Mean SkMVECs` = mean_normalized_count_SkMVECs,
+      `Mean HUVECs` = mean_normalized_count_HUVECs
+    ) %>%
+    mutate(
+      `Mean SkMVECs` = round(`Mean SkMVECs`, 1),
+      `Mean HUVECs` = round(`Mean HUVECs`, 1),
+      log2FoldChange = round(log2FoldChange, 2),
+      padj = signif(padj, 3)
+    )
+  
+  write_csv(
+    word_table,
+    file.path(
+      output_directory,
+      paste0(file_name, "_word_table.csv")
+    )
   )
+  
+  return(go_comparison)
+}
 
-go_myoblast_fusion_word_table <- go_myoblast_fusion_word_table %>%
-  mutate(
-    `Mean normalized expression` =
-      round(`Mean normalized expression`, 2),
+# ------------------------------------------------------------
+# 10.3 Run GO gene comparisons
+# ------------------------------------------------------------
+
+# First GO term: myoblast fusion
+myoblast_fusion_comparison <- compare_go_genes(
+  go_genes = go_myoblast_fusion_genes,
+  go_id = "GO:0007520",
+  go_description = "myoblast fusion"
+)
+
+# Second GO term: myoblast proliferation
+myoblast_proliferation_comparison <- compare_go_genes(
+  go_genes = go_myoblast_proliferation_genes,
+  go_id = "GO:0051450",
+  go_description = "myoblast proliferation"
+)
+
+# Third GO term: sprouting angiogenesis
+sprouting_angiogenesis_comparison <- compare_go_genes(
+  go_genes = go_sprouting_angiogenesis_genes,
+  go_id = "GO:0002040",
+  go_description = "sprouting angiogenesis"
+)
+
+
+# ------------------------------------------------------------
+# 10.4 Create summary table for the three biological themes
+# ------------------------------------------------------------
+
+# This table summarizes the three GO themes.
+# It is useful for your EIN because it gives a quick overview.
+
+make_go_summary <- function(go_comparison, go_id, go_description) {
+  
+  summary_table <- tibble(
+    go_term = go_id,
+    go_description = go_description,
     
-    `Log2 fold change` =
-      round(`Log2 fold change`, 2),
+    number_of_genes_in_GO_list = nrow(go_comparison),
     
-    `Adjusted p-value` =
-      signif(`Adjusted p-value`, 3)
+    found_in_DESeq2_results = sum(
+      go_comparison$found_in_results_table,
+      na.rm = TRUE
+    ),
+    
+    expressed_in_SkMVECs = sum(
+      go_comparison$expressed_in_SkMVECs,
+      na.rm = TRUE
+    ),
+    
+    expressed_in_HUVECs = sum(
+      go_comparison$expressed_in_HUVECs,
+      na.rm = TRUE
+    ),
+    
+    significantly_higher_in_SkMVECs = sum(
+      go_comparison$padj <= 0.05 &
+        go_comparison$log2FoldChange >= 1,
+      na.rm = TRUE
+    ),
+    
+    significantly_higher_in_HUVECs = sum(
+      go_comparison$padj <= 0.05 &
+        go_comparison$log2FoldChange <= -1,
+      na.rm = TRUE
+    )
   )
+  
+  return(summary_table)
+}
 
-view(go_myoblast_fusion_word_table)
-##################
-
-# ------------------------------------------------------------
-# 10.8 Save the final comparison table
-# ------------------------------------------------------------
-
-write_csv(
-  go_myoblast_fusion_comparison,
-  file.path(
-    output_directory,
-    "GO_0007520_myoblast_fusion_complete_comparison.csv"
-  )
-)
-
-# Open the table in RStudio
-View(go_myoblast_fusion_comparison)
-
-
-# ------------------------------------------------------------
-# 11. Inspect normalized counts for myoblast-fusion genes
-# ------------------------------------------------------------
-
-# The normalized_counts table contains:
-# one gene column
-# ten sample columns
-#
-# These values are useful to compare expression levels between samples,
-# because DESeq2 corrects for differences in sequencing depth.
-
-normalized_counts_for_go <- normalized_counts %>%
-  filter(gene %in% go_myoblast_fusion_genes)
-
-# Save this table so it can be opened in Excel.
-write_csv(
-  normalized_counts_for_go,
-  file.path(
-    output_directory,
-    "GO_0007520_myoblast_fusion_normalized_counts_per_sample.csv"
-  )
-)
-
-View(normalized_counts_for_go)
-
-# Convert the normalized count table to long format.
-# This makes it easier to plot in ggplot2.
-
-normalized_counts_long <- normalized_counts_for_go %>%
-  pivot_longer(
-    cols = -gene,
-    names_to = "sampleName",
-    values_to = "normalized_count"
-  ) %>%
-  left_join(
-    sample_table,
-    by = "sampleName"
-  )
-
-# Calculate the mean normalized expression per gene per cell type.
-
-go_expression_summary <- normalized_counts_long %>%
-  group_by(gene, condition) %>%
-  summarise(
-    mean_normalized_count = mean(normalized_count, na.rm = TRUE),
-    sd_normalized_count = sd(normalized_count, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-write_csv(
-  go_expression_summary,
-  file.path(
-    output_directory,
-    "GO_0007520_myoblast_fusion_mean_expression_per_cell_type.csv"
+go_theme_summary <- bind_rows(
+  make_go_summary(
+    myoblast_fusion_comparison,
+    "GO:0007520",
+    "myoblast fusion"
+  ),
+  
+  make_go_summary(
+    myoblast_proliferation_comparison,
+    "GO:0051450",
+    "myoblast proliferation"
+  ),
+  
+  make_go_summary(
+    sprouting_angiogenesis_comparison,
+    "GO:0002040",
+    "sprouting angiogenesis"
   )
 )
 
-View(go_expression_summary)
-
-go_myoblast_fusion_word_table <- go_myoblast_fusion_comparison %>%
-  dplyr::select(
-    go_gene,
-    mean_normalized_count_SkMVECs,
-    mean_normalized_count_HUVECs,
-    log2FoldChange,
-    padj
-  ) %>%
-  dplyr::rename(
-    `Mean SkMVECs` = mean_normalized_count_SkMVECs,
-    `Mean HUVECs` = mean_normalized_count_HUVECs
-  ) %>%
-  dplyr::mutate(
-    `Mean SkMVECs` = round(`Mean SkMVECs`, 1),
-    `Mean HUVECs` = round(`Mean HUVECs`, 1),
-    log2FoldChange = round(log2FoldChange, 2),
-    padj = signif(padj, 3)
-  )
-
-# Show the clean table in RStudio
-View(go_myoblast_fusion_word_table)
-
-# Save the table as a CSV file
 write_csv(
-  go_myoblast_fusion_word_table,
+  go_theme_summary,
   file.path(
     output_directory,
-    "GO_0007520_myoblast_fusion_word_table.csv"
+    "GO_theme_summary_SkMVEC_vs_HUVEC.csv"
   )
 )
+
+View(go_theme_summary)
+
 
 # ------------------------------------------------------------
 # 11. Create a PCA plot
