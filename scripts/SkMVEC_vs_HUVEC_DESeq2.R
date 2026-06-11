@@ -249,6 +249,7 @@ write.csv(
   file.path(output_directory, "normalized_counts.csv"),
   row.names = FALSE
 )
+view(normalized_counts)
 
 # ------------------------------------------------------------
 # 10. Compare selected QuickGO gene lists with DESeq2 results
@@ -713,6 +714,391 @@ write_csv(
 
 View(go_theme_summary)
 
+# ------------------------------------------------------------
+# 10.5 Visualize mean normalized counts for each GO term
+# ------------------------------------------------------------
+
+# This section makes one side-by-side barplot for each GO term.
+#
+# The barplot uses the mean normalized counts from the comparison tables.
+# Normalized counts are useful because they are corrected for sequencing depth.
+#
+# Each gene gets two bars:
+# - one bar for mean expression in SkMVECs
+# - one bar for mean expression in HUVECs
+#
+# This makes it easier to see which cell type has higher expression
+# for each GO gene.
+
+make_go_side_by_side_barplot <- function(go_comparison, plot_title, output_file_name) {
+  
+  # ------------------------------------------------------------
+  # Prepare the table for plotting
+  # ------------------------------------------------------------
+  
+  # Keep only the columns needed for the plot.
+  # Genes not found in the DESeq2 result table are removed from the plot,
+  # because they do not have expression values.
+  
+  plot_table <- go_comparison %>%
+    filter(found_in_results_table) %>%
+    dplyr::select(
+      go_gene,
+      mean_normalized_count_SkMVECs,
+      mean_normalized_count_HUVECs,
+      log2FoldChange,
+      padj,
+      interpretation
+    )
+  
+  # Replace missing mean expression values with zero.
+  # This prevents errors in the plot.
+  plot_table <- plot_table %>%
+    mutate(
+      mean_normalized_count_SkMVECs = replace_na(mean_normalized_count_SkMVECs, 0),
+      mean_normalized_count_HUVECs = replace_na(mean_normalized_count_HUVECs, 0)
+    )
+  
+  # Order genes by total mean expression.
+  # This makes the plot easier to read.
+  plot_table <- plot_table %>%
+    mutate(
+      total_mean_expression =
+        mean_normalized_count_SkMVECs + mean_normalized_count_HUVECs
+    ) %>%
+    arrange(desc(total_mean_expression))
+  
+  plot_table$go_gene <- factor(
+    plot_table$go_gene,
+    levels = plot_table$go_gene
+  )
+  
+  # Convert the table to long format for ggplot.
+  # ggplot works best when one row = one gene in one condition.
+  plot_table_long <- plot_table %>%
+    pivot_longer(
+      cols = c(
+        mean_normalized_count_SkMVECs,
+        mean_normalized_count_HUVECs
+      ),
+      names_to = "cell_type",
+      values_to = "mean_normalized_count"
+    ) %>%
+    mutate(
+      cell_type = case_when(
+        cell_type == "mean_normalized_count_SkMVECs" ~ "SkMVECs",
+        cell_type == "mean_normalized_count_HUVECs" ~ "HUVECs"
+      )
+    )
+  
+  # ------------------------------------------------------------
+  # Make the side-by-side barplot
+  # ------------------------------------------------------------
+  
+  p <- ggplot(
+    plot_table_long,
+    aes(
+      x = go_gene,
+      y = mean_normalized_count,
+      fill = cell_type
+    )
+  ) +
+    geom_col(
+      position = position_dodge(width = 0.8),
+      width = 0.7
+    ) +
+    scale_fill_manual(
+      values = c(
+        "SkMVECs" = "goldenrod2",
+        "HUVECs" = "royalblue3"
+      )
+    ) +
+    labs(
+      title = plot_title,
+      subtitle = "Mean normalized counts in confluent SkMVECs and confluent HUVECs",
+      x = "Gene",
+      y = "Mean normalized count",
+      fill = "Cell type"
+    ) +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      plot.title = element_text(face = "bold")
+    )
+  
+  print(p)
+  
+  ggsave(
+    file.path(output_directory, output_file_name),
+    p,
+    width = 10,
+    height = 6,
+    dpi = 300
+  )
+  
+  return(p)
+}
+
+
+
+# ------------------------------------------------------------
+# 10.6 Create side-by-side barplots for the three GO terms
+# ------------------------------------------------------------
+
+# GO:0007520 - myoblast fusion
+p_myoblast_fusion_barplot <- make_go_side_by_side_barplot(
+  go_comparison = myoblast_fusion_comparison,
+  plot_title = "GO:0007520 - Myoblast fusion",
+  output_file_name = "GO_0007520_myoblast_fusion_side_by_side_barplot.png"
+)
+
+# GO:0051450 - myoblast proliferation
+p_myoblast_proliferation_barplot <- make_go_side_by_side_barplot(
+  go_comparison = myoblast_proliferation_comparison,
+  plot_title = "GO:0051450 - Myoblast proliferation",
+  output_file_name = "GO_0051450_myoblast_proliferation_side_by_side_barplot.png"
+)
+
+# GO:0002040 - sprouting angiogenesis
+p_sprouting_angiogenesis_barplot <- make_go_side_by_side_barplot(
+  go_comparison = sprouting_angiogenesis_comparison,
+  plot_title = "GO:0002040 - Sprouting angiogenesis",
+  output_file_name = "GO_0002040_sprouting_angiogenesis_side_by_side_barplot.png"
+)
+
+# ------------------------------------------------------------
+# 10.7 Combined dot plot of log2 fold changes for GO genes
+# ------------------------------------------------------------
+
+# This plot combines the found genes from the three selected GO terms.
+#
+# The goal of this plot is to show:
+# - which genes are higher in SkMVECs
+# - which genes are higher in HUVECs
+# - which genes are statistically significant
+#
+# Interpretation:
+# log2FoldChange > 0 = higher in SkMVECs
+# log2FoldChange < 0 = higher in HUVECs
+# log2FoldChange = 0 = no clear difference
+#
+# Dot color shows whether the gene is statistically significant.
+# Dot size shows the average expression level, based on baseMean.
+
+combined_go_dotplot_table <- bind_rows(
+  myoblast_fusion_comparison %>%
+    mutate(go_theme = "GO:0007520 - Myoblast fusion"),
+  
+  myoblast_proliferation_comparison %>%
+    mutate(go_theme = "GO:0051450 - Myoblast proliferation"),
+  
+  sprouting_angiogenesis_comparison %>%
+    mutate(go_theme = "GO:0002040 - Sprouting angiogenesis")
+)
+
+# Keep only genes that were found in the filtered DESeq2 dataset.
+# Genes that were not found have NA values and would not be useful in the plot.
+combined_go_dotplot_table <- combined_go_dotplot_table %>%
+  filter(found_in_results_table)
+
+# Add a clear significance label.
+combined_go_dotplot_table <- combined_go_dotplot_table %>%
+  mutate(
+    significance = case_when(
+      statistically_significant ~ "Significant",
+      TRUE ~ "Not significant"
+    ),
+    
+    # This creates a unique label for each gene within each GO term.
+    # This avoids problems if the same gene appears in more than one GO term.
+    gene_plot_label = paste(go_gene, go_theme, sep = "___")
+  )
+
+# Order genes by GO theme and log2 fold change.
+combined_go_dotplot_table <- combined_go_dotplot_table %>%
+  arrange(go_theme, log2FoldChange)
+
+combined_go_dotplot_table$gene_plot_label <- factor(
+  combined_go_dotplot_table$gene_plot_label,
+  levels = combined_go_dotplot_table$gene_plot_label
+)
+
+p_go_logfc_dotplot <- ggplot(
+  combined_go_dotplot_table,
+  aes(
+    x = log2FoldChange,
+    y = gene_plot_label,
+    color = significance,
+    size = baseMean
+  )
+) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    color = "grey40"
+  ) +
+  geom_point(alpha = 0.85) +
+  facet_grid(
+    go_theme ~ .,
+    scales = "free_y",
+    space = "free_y"
+  ) +
+  scale_y_discrete(
+    labels = function(x) sub("___.*", "", x)
+  ) +
+  scale_color_manual(
+    values = c(
+      "Significant" = "firebrick",
+      "Not significant" = "grey50"
+    )
+  ) +
+  labs(
+    title = "GO genes in the SkMVEC versus HUVEC comparison",
+    subtitle = "Positive log2 fold change = higher in SkMVECs; negative log2 fold change = higher in HUVECs",
+    x = "log2 fold change",
+    y = "Gene",
+    color = "DESeq2 result",
+    size = "Mean expression\n(baseMean)"
+  ) +
+  theme_bw() +
+  theme(
+    strip.text.y = element_text(face = "bold"),
+    plot.title = element_text(face = "bold")
+  )
+
+print(p_go_logfc_dotplot)
+
+ggsave(
+  file.path(
+    output_directory,
+    "GO_terms_combined_log2FC_dotplot.png"
+  ),
+  p_go_logfc_dotplot,
+  width = 10,
+  height = 9,
+  dpi = 300
+)
+
+
+# ------------------------------------------------------------
+# 10.8 Create compact table for EIN
+# ------------------------------------------------------------
+#GO-term: myoblast fusion
+myoblast_fusion_compact <- myoblast_fusion_comparison %>%
+  select(
+    go_gene,
+    found_in_results_table,
+    mean_normalized_count_SkMVECs,
+    mean_normalized_count_HUVECs,
+    log2FoldChange,
+    padj,
+    statistically_significant,
+    interpretation
+  ) %>%
+  arrange(desc(log2FoldChange)) %>%
+  rename(
+    Gene = go_gene,
+    `Found in dataset` = found_in_results_table,
+    `Mean expression SkMVECs` = mean_normalized_count_SkMVECs,
+    `Mean expression HUVECs` = mean_normalized_count_HUVECs,
+    `Log2 fold change` = log2FoldChange,
+    `Adjusted p-value` = padj,
+    `Statistically significant` = statistically_significant,
+    Interpretation = interpretation
+  ) %>%
+  mutate(
+    `Mean expression SkMVECs` =
+      round(`Mean expression SkMVECs`, 2),
+    
+    `Mean expression HUVECs` =
+      round(`Mean expression HUVECs`, 2),
+    
+    `Log2 fold change` =
+      round(`Log2 fold change`, 2),
+    
+    `Adjusted p-value` =
+      signif(`Adjusted p-value`, 3)
+  )
+
+View(myoblast_fusion_compact)
+
+#GO-term myoblast proliferation
+myoblast_proliferation_compact <- myoblast_proliferation_comparison %>%
+  select(
+    go_gene,
+    found_in_results_table,
+    mean_normalized_count_SkMVECs,
+    mean_normalized_count_HUVECs,
+    log2FoldChange,
+    padj,
+    statistically_significant,
+    interpretation
+  ) %>%
+  arrange(desc(log2FoldChange)) %>%
+  rename(
+    Gene = go_gene,
+    `Found in dataset` = found_in_results_table,
+    `Mean expression SkMVECs` = mean_normalized_count_SkMVECs,
+    `Mean expression HUVECs` = mean_normalized_count_HUVECs,
+    `Log2 fold change` = log2FoldChange,
+    `Adjusted p-value` = padj,
+    `Statistically significant` = statistically_significant,
+    Interpretation = interpretation
+  ) %>%
+  mutate(
+    `Mean expression SkMVECs` =
+      round(`Mean expression SkMVECs`, 2),
+    
+    `Mean expression HUVECs` =
+      round(`Mean expression HUVECs`, 2),
+    
+    `Log2 fold change` =
+      round(`Log2 fold change`, 2),
+    
+    `Adjusted p-value` =
+      signif(`Adjusted p-value`, 3)
+  )
+
+View(myoblast_proliferation_compact)
+
+#GO-term sprouting angiongenesis
+sprouting_angiogenesis_compact <- sprouting_angiogenesis_comparison %>%
+  select(
+    go_gene,
+    found_in_results_table,
+    mean_normalized_count_SkMVECs,
+    mean_normalized_count_HUVECs,
+    log2FoldChange,
+    padj,
+    statistically_significant,
+    interpretation
+  ) %>%
+  arrange(desc(log2FoldChange)) %>%
+  rename(
+    Gene = go_gene,
+    `Found in dataset` = found_in_results_table,
+    `Mean expression SkMVECs` = mean_normalized_count_SkMVECs,
+    `Mean expression HUVECs` = mean_normalized_count_HUVECs,
+    `Log2 fold change` = log2FoldChange,
+    `Adjusted p-value` = padj,
+    `Statistically significant` = statistically_significant,
+    Interpretation = interpretation
+  ) %>%
+  mutate(
+    `Mean expression SkMVECs` =
+      round(`Mean expression SkMVECs`, 2),
+    
+    `Mean expression HUVECs` =
+      round(`Mean expression HUVECs`, 2),
+    
+    `Log2 fold change` =
+      round(`Log2 fold change`, 2),
+    
+    `Adjusted p-value` =
+      signif(`Adjusted p-value`, 3)
+  )
+
+View(sprouting_angiogenesis_compact)
 
 # ------------------------------------------------------------
 # 11. Create a PCA plot
